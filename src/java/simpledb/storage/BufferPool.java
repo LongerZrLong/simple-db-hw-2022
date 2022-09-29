@@ -2,15 +2,12 @@ package simpledb.storage;
 
 import simpledb.common.Database;
 import simpledb.common.DbException;
-import simpledb.common.DeadlockException;
 import simpledb.common.Permissions;
 import simpledb.transaction.TransactionAbortedException;
 import simpledb.transaction.TransactionId;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -39,6 +36,8 @@ public class BufferPool {
     public static final int DEFAULT_PAGES = 50;
 
     private final Page[] pages;
+    private final Map<PageId, Integer> pgId2Idx;
+    private final List<Integer> nullPageIdxes;
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -47,6 +46,12 @@ public class BufferPool {
      */
     public BufferPool(int numPages) {
         pages = new Page[numPages];
+        pgId2Idx = new HashMap<>();
+        nullPageIdxes = new LinkedList<>();
+
+        for (int i = 0; i < pages.length; i++) {
+            nullPageIdxes.add(i);
+        }
     }
 
     public static int getPageSize() {
@@ -80,27 +85,20 @@ public class BufferPool {
      */
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
-        // without eviction policy. iterate to find the available slot
-        int i;
-        for (i = 0; i < pages.length; i++) {
-            if (pages[i] == null) {
-                break;
-            }
-
-            // if found the cached page, return
-            if (pid.equals(pages[i].getId())) {
-                return pages[i];
-            }
+        if (pgId2Idx.containsKey(pid)) {
+            return pages[pgId2Idx.get(pid)];
         }
 
-        // no slots available, throw DbException
-        if (i == pages.length) {
-            throw new DbException("BufferPool full");
+        if (nullPageIdxes.isEmpty()) {
+            // without eviction policy, if there is no slots available, throw DbException
+            throw new DbException("BufferPool::getPage: BufferPool full");
         }
 
-        pages[i] = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+        int idx = nullPageIdxes.remove(0);
+        pages[idx] = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+        pgId2Idx.put(pages[idx].getId(), idx);
 
-        return pages[i];
+        return pages[idx];
     }
 
     /**
