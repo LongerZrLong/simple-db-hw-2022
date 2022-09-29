@@ -3,6 +3,7 @@ package simpledb.execution;
 import simpledb.common.Database;
 import simpledb.common.DbException;
 import simpledb.common.Type;
+import simpledb.common.Utility;
 import simpledb.storage.BufferPool;
 import simpledb.storage.IntField;
 import simpledb.storage.Tuple;
@@ -20,6 +21,11 @@ public class Delete extends Operator {
 
     private static final long serialVersionUID = 1L;
 
+    private final TransactionId tid;
+    private OpIterator child;
+
+    private boolean done;
+
     /**
      * Constructor specifying the transaction that this delete belongs to as
      * well as the child to read from.
@@ -28,24 +34,28 @@ public class Delete extends Operator {
      * @param child The child operator from which to read tuples for deletion
      */
     public Delete(TransactionId t, OpIterator child) {
-        // TODO: some code goes here
+        this.tid = t;
+        this.child = child;
     }
 
     public TupleDesc getTupleDesc() {
-        // TODO: some code goes here
-        return null;
+        return Utility.getTupleDesc(1);
     }
 
     public void open() throws DbException, TransactionAbortedException {
-        // TODO: some code goes here
+        super.open();
+        child.open();
+        done = false;
     }
 
     public void close() {
-        // TODO: some code goes here
+        super.close();
+        child.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
-        // TODO: some code goes here
+        child.rewind();
+        done = false;
     }
 
     /**
@@ -58,19 +68,34 @@ public class Delete extends Operator {
      * @see BufferPool#deleteTuple
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
-        // TODO: some code goes here
-        return null;
+        if (done) return null;
+
+        int count = 0;
+        while (child.hasNext()) {
+            try {
+                Database.getBufferPool().deleteTuple(tid, child.next());
+                count++;
+            } catch (IOException ioe) {
+                // Fixme: currently do nothing
+            }
+        }
+
+        done = true;
+
+        Tuple ret = new Tuple(getTupleDesc());
+        ret.setField(0, new IntField(count));
+        return ret;
     }
 
     @Override
     public OpIterator[] getChildren() {
-        // TODO: some code goes here
-        return null;
+        OpIterator[] ret = new OpIterator[1];
+        ret[0] = child;
+        return ret;
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-        // TODO: some code goes here
+        child = children[0];
     }
-
 }

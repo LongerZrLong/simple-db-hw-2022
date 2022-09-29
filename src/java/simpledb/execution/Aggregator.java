@@ -1,6 +1,8 @@
 package simpledb.execution;
 
+import simpledb.common.Type;
 import simpledb.storage.Tuple;
+import simpledb.storage.TupleDesc;
 import simpledb.storage.TupleIterator;
 
 import java.io.Serializable;
@@ -67,6 +69,19 @@ public interface Aggregator extends Serializable {
                 return "sc_avg";
             throw new IllegalStateException("impossible to reach here");
         }
+    }
+
+    static TupleDesc constructTupleDesc(int gbfield, Type gbfieldtype) {
+        Type[] types;
+        if (gbfield == NO_GROUPING) {
+            types = new Type[1];
+            types[0] = Type.INT_TYPE;
+        } else {
+            types = new Type[2];
+            types[0] = gbfieldtype;
+            types[1] = Type.INT_TYPE;
+        }
+        return new TupleDesc(types);
     }
 
     /**

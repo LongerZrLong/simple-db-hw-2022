@@ -8,6 +8,7 @@ import simpledb.transaction.TransactionId;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -90,8 +91,8 @@ public class BufferPool {
         }
 
         if (nullPageIdxes.isEmpty()) {
-            // without eviction policy, if there is no slots available, throw DbException
-            throw new DbException("BufferPool::getPage: BufferPool full");
+            // if there is no null page, evict one
+            evictPage();
         }
 
         int idx = nullPageIdxes.remove(0);
@@ -163,8 +164,8 @@ public class BufferPool {
      */
     public void insertTuple(TransactionId tid, int tableId, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
-        // TODO: some code goes here
-        // not necessary for lab1
+        List<Page> pages = Database.getCatalog().getDatabaseFile(tableId).insertTuple(tid, t);
+        updatePage(pages, tid);
     }
 
     /**
@@ -182,8 +183,8 @@ public class BufferPool {
      */
     public void deleteTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
-        // TODO: some code goes here
-        // not necessary for lab1
+        List<Page> pages = Database.getCatalog().getDatabaseFile(t.getRecordId().getPageId().getTableId()).deleteTuple(tid, t);
+        updatePage(pages, tid);
     }
 
     /**
@@ -192,9 +193,10 @@ public class BufferPool {
      * break simpledb if running in NO STEAL mode.
      */
     public synchronized void flushAllPages() throws IOException {
-        // TODO: some code goes here
-        // not necessary for lab1
-
+        for (Page page : pages) {
+            if (page == null) continue;
+            flushPage(page.getId());
+        }
     }
 
     /**
@@ -207,8 +209,15 @@ public class BufferPool {
      * are removed from the cache so they can be reused safely
      */
     public synchronized void removePage(PageId pid) {
-        // TODO: some code goes here
-        // not necessary for lab1
+        int idx = pgId2Idx.getOrDefault(pid, -1);
+
+        if (idx == -1) {
+            System.out.println("BufferPool::removePage: page not in BufferPool");
+            return;
+        }
+
+        pgId2Idx.remove(pid);
+        nullPageIdxes.add(idx);
     }
 
     /**
@@ -217,8 +226,21 @@ public class BufferPool {
      * @param pid an ID indicating the page to flush
      */
     private synchronized void flushPage(PageId pid) throws IOException {
-        // TODO: some code goes here
-        // not necessary for lab1
+        int idx = pgId2Idx.getOrDefault(pid, -1);
+
+        if (idx == -1) {
+            System.out.println("BufferPool::flushPage: page not in BufferPool");
+            return;
+        }
+
+        TransactionId dirtier = pages[idx].isDirty();
+        if (dirtier == null) {
+            return;
+        }
+
+        DbFile dbFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
+        dbFile.writePage(pages[idx]);
+        pages[idx].markDirty(false, dirtier);
     }
 
     /**
@@ -234,8 +256,28 @@ public class BufferPool {
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
     private synchronized void evictPage() throws DbException {
-        // TODO: some code goes here
-        // not necessary for lab1
+        // When evictPage is called, it is guaranteed that all the pages are not null
+        // randomly pick an index in [0, pages.length) to evict
+        int randomIdx = ThreadLocalRandom.current().nextInt() & Integer.MAX_VALUE % pages.length;
+
+        try {
+            PageId pid = pages[randomIdx].getId();
+            flushPage(pid);
+            removePage(pid);
+        } catch (IOException ioe) {
+        }
     }
 
+    // Fixme: temporary implementation
+    private synchronized void updatePage(List<Page> pages, TransactionId tid)
+            throws TransactionAbortedException, DbException {
+        for (Page p : pages) {
+            // get the page and overwrite it with the dirty one
+            getPage(tid, p.getId(), null);
+            p.markDirty(true, tid);
+
+            int idx = pgId2Idx.get(p.getId());
+            this.pages[idx] = p;
+        }
+    }
 }

@@ -1,7 +1,14 @@
 package simpledb.execution;
 
+import simpledb.common.DbException;
 import simpledb.common.Type;
+import simpledb.storage.Field;
+import simpledb.storage.IntField;
 import simpledb.storage.Tuple;
+import simpledb.storage.TupleDesc;
+import simpledb.transaction.TransactionAbortedException;
+
+import java.util.*;
 
 /**
  * Knows how to compute some aggregate over a set of IntFields.
@@ -9,6 +16,16 @@ import simpledb.storage.Tuple;
 public class IntegerAggregator implements Aggregator {
 
     private static final long serialVersionUID = 1L;
+
+    private static final Field dummyField = new IntField(Integer.MAX_VALUE);
+
+    private final int gbfield;
+    private final int afield;
+    private final Op what;
+
+    private final TupleDesc aggTupleDesc;
+
+    Map<Field, List<Float>> map;
 
     /**
      * Aggregate constructor
@@ -22,7 +39,13 @@ public class IntegerAggregator implements Aggregator {
      */
 
     public IntegerAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
-        // TODO: some code goes here
+        this.gbfield = gbfield;
+        this.afield = afield;
+        this.what = what;
+
+        aggTupleDesc = Aggregator.constructTupleDesc(gbfield, gbfieldtype);
+
+        map = new HashMap<>();
     }
 
     /**
@@ -32,7 +55,14 @@ public class IntegerAggregator implements Aggregator {
      * @param tup the Tuple containing an aggregate field and a group-by field
      */
     public void mergeTupleIntoGroup(Tuple tup) {
-        // TODO: some code goes here
+        Field key = (gbfield == NO_GROUPING) ? dummyField : tup.getField(gbfield);
+
+        if (!map.containsKey(key)) {
+            map.put(key, new LinkedList<>());
+        }
+
+        int tupValue = ((IntField)tup.getField(afield)).getValue();
+        map.get(key).add((float)tupValue);
     }
 
     /**
@@ -44,9 +74,74 @@ public class IntegerAggregator implements Aggregator {
      *         the constructor.
      */
     public OpIterator iterator() {
-        // TODO: some code goes here
-        throw new
-        UnsupportedOperationException("please implement me for lab2");
+        return new IntAggIterator();
+    }
+
+    private class IntAggIterator implements OpIterator {
+        List<Tuple> list;
+        Iterator<Tuple> iter = null;
+
+        IntAggIterator() {
+            list = new LinkedList<>();
+
+            for (Map.Entry<Field, List<Float>> entry : map.entrySet()) {
+                float agg = 0;
+                switch (what) {
+                    case MIN:
+                        agg = Collections.min(entry.getValue()); break;
+                    case MAX:
+                        agg = Collections.max(entry.getValue()); break;
+                    case SUM:
+                        for (Float it : entry.getValue()) { agg += it; } break;
+                    case AVG:
+                        for (Float it : entry.getValue()) { agg += it; }
+                        agg = agg / entry.getValue().size(); break;
+                    case COUNT:
+                        agg = entry.getValue().size(); break;
+                    default:
+                        throw new RuntimeException("Unexpected Branch");
+                }
+
+                Tuple t = new Tuple(aggTupleDesc);
+                if (gbfield == NO_GROUPING) {
+                    t.setField(0, new IntField((int) agg));
+                } else {
+                    t.setField(0, entry.getKey());
+                    t.setField(1, new IntField((int) agg));
+                }
+                list.add(t);
+            }
+        }
+
+        @Override
+        public void open() throws DbException, TransactionAbortedException {
+            iter = list.iterator();
+        }
+
+        @Override
+        public boolean hasNext() throws DbException, TransactionAbortedException {
+            return iter.hasNext();
+        }
+
+        @Override
+        public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+            return iter.next();
+        }
+
+        @Override
+        public void rewind() throws DbException, TransactionAbortedException {
+            open();
+        }
+
+        @Override
+        public TupleDesc getTupleDesc() {
+            return aggTupleDesc;
+        }
+
+        @Override
+        public void close() {
+            iter = null;
+        }
     }
 
 }
