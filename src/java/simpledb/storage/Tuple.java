@@ -1,6 +1,9 @@
 package simpledb.storage;
 
+import simpledb.common.Type;
+
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 
@@ -13,6 +16,10 @@ public class Tuple implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    TupleDesc td;
+    ArrayList<Field> fields;
+    RecordId rid;
+
     /**
      * Create a new tuple with the specified schema (type).
      *
@@ -20,15 +27,14 @@ public class Tuple implements Serializable {
      *           instance with at least one field.
      */
     public Tuple(TupleDesc td) {
-        // TODO: some code goes here
+        resetTupleDesc(td);
     }
 
     /**
      * @return The TupleDesc representing the schema of this tuple.
      */
     public TupleDesc getTupleDesc() {
-        // TODO: some code goes here
-        return null;
+        return td;
     }
 
     /**
@@ -36,8 +42,7 @@ public class Tuple implements Serializable {
      *         be null.
      */
     public RecordId getRecordId() {
-        // TODO: some code goes here
-        return null;
+        return rid;
     }
 
     /**
@@ -46,7 +51,7 @@ public class Tuple implements Serializable {
      * @param rid the new RecordId for this tuple.
      */
     public void setRecordId(RecordId rid) {
-        // TODO: some code goes here
+        this.rid = rid;
     }
 
     /**
@@ -56,7 +61,7 @@ public class Tuple implements Serializable {
      * @param f new value for the field.
      */
     public void setField(int i, Field f) {
-        // TODO: some code goes here
+        fields.set(i, f);
     }
 
     /**
@@ -64,8 +69,7 @@ public class Tuple implements Serializable {
      * @return the value of the ith field, or null if it has not been set.
      */
     public Field getField(int i) {
-        // TODO: some code goes here
-        return null;
+        return fields.get(i);
     }
 
     /**
@@ -77,22 +81,44 @@ public class Tuple implements Serializable {
      * where \t is any whitespace (except a newline)
      */
     public String toString() {
-        // TODO: some code goes here
-        throw new UnsupportedOperationException("Implement this");
+        String[] fieldStrs = new String[fields.size()];
+
+        for (int i = 0; i < fieldStrs.length; i++) {
+            fieldStrs[i] = fields.get(i).toString();
+        }
+
+        return String.join("\t", fieldStrs);
     }
 
     /**
      * @return An iterator which iterates over all the fields of this tuple
      */
     public Iterator<Field> fields() {
-        // TODO: some code goes here
-        return null;
+        return fields.iterator();
     }
 
     /**
      * reset the TupleDesc of this tuple (only affecting the TupleDesc)
      */
     public void resetTupleDesc(TupleDesc td) {
-        // TODO: some code goes here
+        this.td = td;
+        resetFields();
+    }
+
+    private void resetFields() {
+        fields = new ArrayList<>(this.td.numFields());
+
+        Iterator<TupleDesc.TDItem> it = this.td.iterator();
+        while (it.hasNext()) {
+            TupleDesc.TDItem item = it.next();
+            switch (item.fieldType) {
+                case INT_TYPE:
+                    fields.add(new IntField(0));
+                    break;
+                case STRING_TYPE:
+                    fields.add(new StringField("", Type.STRING_LEN));
+                    break;
+            }
+        }
     }
 }

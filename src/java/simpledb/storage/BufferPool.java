@@ -38,13 +38,15 @@ public class BufferPool {
      */
     public static final int DEFAULT_PAGES = 50;
 
+    private final Page[] pages;
+
     /**
      * Creates a BufferPool that caches up to numPages pages.
      *
      * @param numPages maximum number of pages in this buffer pool.
      */
     public BufferPool(int numPages) {
-        // TODO: some code goes here
+        pages = new Page[numPages];
     }
 
     public static int getPageSize() {
@@ -78,8 +80,27 @@ public class BufferPool {
      */
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
-        // TODO: some code goes here
-        return null;
+        // without eviction policy. iterate to find the available slot
+        int i;
+        for (i = 0; i < pages.length; i++) {
+            if (pages[i] == null) {
+                break;
+            }
+
+            // if found the cached page, return
+            if (pid.equals(pages[i].getId())) {
+                return pages[i];
+            }
+        }
+
+        // no slots available, throw DbException
+        if (i == pages.length) {
+            throw new DbException("BufferPool full");
+        }
+
+        pages[i] = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+
+        return pages[i];
     }
 
     /**

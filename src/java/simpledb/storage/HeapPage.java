@@ -8,6 +8,7 @@ import simpledb.transaction.TransactionId;
 
 import java.io.*;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.NoSuchElementException;
 
 /**
@@ -75,9 +76,7 @@ public class HeapPage implements Page {
      * @return the number of tuples on this page
      */
     private int getNumTuples() {
-        // TODO: some code goes here
-        return 0;
-
+        return (BufferPool.getPageSize()*8) / (td.getSize() * 8 + 1);
     }
 
     /**
@@ -86,10 +85,7 @@ public class HeapPage implements Page {
      * @return the number of bytes in the header of a page in a HeapFile with each tuple occupying tupleSize bytes
      */
     private int getHeaderSize() {
-
-        // TODO: some code goes here
-        return 0;
-
+        return (numSlots + 7) / 8;
     }
 
     /**
@@ -121,8 +117,7 @@ public class HeapPage implements Page {
      * @return the PageId associated with this page.
      */
     public HeapPageId getId() {
-        // TODO: some code goes here
-        throw new UnsupportedOperationException("implement this");
+        return pid;
     }
 
     /**
@@ -293,16 +288,22 @@ public class HeapPage implements Page {
      * Returns the number of unused (i.e., empty) slots on this page.
      */
     public int getNumUnusedSlots() {
-        // TODO: some code goes here
-        return 0;
+        int unused = 0;
+        for (int i = 0; i < numSlots; i++) {
+            if (!isSlotUsed(i))
+                unused++;
+        }
+        return unused;
     }
 
     /**
      * Returns true if associated slot on this page is filled.
      */
     public boolean isSlotUsed(int i) {
-        // TODO: some code goes here
-        return false;
+        if (i >= numSlots)
+            return false;
+
+        return (header[i / 8] & 0x01 << (i % 8)) != 0;
     }
 
     /**
@@ -318,9 +319,33 @@ public class HeapPage implements Page {
      *         (note that this iterator shouldn't return tuples in empty slots!)
      */
     public Iterator<Tuple> iterator() {
-        // TODO: some code goes here
-        return null;
+        return new TupleIterator();
     }
 
+    private class TupleIterator implements Iterator<Tuple> {
+        int i;
+
+        @Override
+        public boolean hasNext() {
+            return i != numSlots;
+        }
+
+        @Override
+        public Tuple next() {
+            Tuple ret = tuples[i];
+            // find the next used slot
+            for (i = i+1; i < numSlots; i++) {
+                if (isSlotUsed(i)) break;
+            }
+            return ret;
+        }
+
+        TupleIterator() {
+            // find the first used slot
+            for (i = 0; i < numSlots; i++) {
+                if (isSlotUsed(i)) break;
+            }
+        }
+    }
 }
 
