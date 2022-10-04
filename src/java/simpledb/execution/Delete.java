@@ -76,7 +76,7 @@ public class Delete extends Operator {
                 Database.getBufferPool().deleteTuple(tid, child.next());
                 count++;
             } catch (IOException ioe) {
-                // Fixme: currently do nothing
+                throw new DbException("Delete::fetchNext");
             }
         }
 

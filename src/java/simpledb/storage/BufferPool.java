@@ -265,6 +265,7 @@ public class BufferPool {
             flushPage(pid);
             removePage(pid);
         } catch (IOException ioe) {
+            throw new DbException("BufferPool::evictPage: fail to write dirty page to disk");
         }
     }
 

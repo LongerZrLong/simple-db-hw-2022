@@ -85,7 +85,7 @@ public class Insert extends Operator {
                 Database.getBufferPool().insertTuple(tid, tableId, child.next());
                 count++;
             } catch (IOException ioe) {
-                // Fixme: currently do nothing
+                throw new DbException("Insert::fetchNext");
             }
         }
 
