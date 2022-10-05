@@ -2,7 +2,7 @@
 
 **Assigned:** Monday September 26, 2022
 
-**Due:** Wednesday, October 5, 2022 by 11:59 PM ET
+**Due:** Wednesday October 5, 2022 by 11:59 PM ET
 
 In this lab assignment, you will write a set of operators for SimpleDB to
 implement table modifications (e.g., insert and delete records), selections,
@@ -21,6 +21,15 @@ The remainder of this document gives some suggestions about how to start coding,
 describes a set of exercises to help you work through the lab, and discusses how
 to hand in your code. This lab requires you to write a fair amount of code, so
 we encourage you to **start early**!
+
+------
+
+**Update (10/05/2022):** If you are starting this lab on or after October 5,
+the code that you will get from this repository will include the starter code
+and the tests for later labs. To get only the subset of the code and tests used
+for lab 2, switch to the `lab2` branch (`git checkout lab2`).
+
+------
 
 <a name="starting"></a>
 
@@ -273,9 +282,9 @@ Now that you have written all of the HeapFile machinery to add and remove
 tuples, you will implement the `Insert` and `Delete` operators.
 
 For plans that implement `insert` and `delete` queries, the top-most operator is
-a special `Insert` or `Delete` operator that modifies the pages on disk. These
-operators return the number of affected tuples. This is implemented by returning
-a single tuple with one integer field, containing the count.
+a special `Insert` or `Delete` operator that modifies the pages. These operators
+return the number of affected tuples. This is implemented by returning a single
+tuple with one integer field, containing the count.
 
 * *Insert*: This operator adds the tuples it reads from its child operator to
   the `tableid` specified in its constructor. It should use the

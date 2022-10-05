@@ -180,7 +180,7 @@ public class JoinOptimizer {
 
     /**
      * Compute a logical, reasonably efficient join on the specified tables. See
-     * PS4 for hints on how this should be implemented.
+     * the Lab 3 description for hints on how this should be implemented.
      *
      * @param stats               Statistics for each table involved in the join, referenced by
      *                            base table names, not alias
@@ -198,10 +198,9 @@ public class JoinOptimizer {
             Map<String, TableStats> stats,
             Map<String, Double> filterSelectivities, boolean explain)
             throws ParsingException {
-        //Not necessary for labs 1--3
+        // Not necessary for labs 1 and 2.
 
         // TODO: some code goes here
-        //Replace the following
         return joins;
     }
 
