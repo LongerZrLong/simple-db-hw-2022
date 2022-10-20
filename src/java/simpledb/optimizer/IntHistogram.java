@@ -7,6 +7,12 @@ import simpledb.execution.Predicate;
  */
 public class IntHistogram {
 
+    private int[] bins;
+    private int nTups;
+    private final int min;
+    private final int max;
+    private final int elementsEach;
+
     /**
      * Create a new IntHistogram.
      * <p>
@@ -24,7 +30,11 @@ public class IntHistogram {
      * @param max     The maximum integer value that will ever be passed to this class for histogramming
      */
     public IntHistogram(int buckets, int min, int max) {
-        // TODO: some code goes here
+        this.bins = new int[buckets];
+        this.nTups = 0;
+        this.min = min;
+        this.max = max;
+        this.elementsEach = ((max - min + 1) + buckets - 1) / buckets;
     }
 
     /**
@@ -33,7 +43,8 @@ public class IntHistogram {
      * @param v Value to add to the histogram
      */
     public void addValue(int v) {
-        // TODO: some code goes here
+        bins[(v - min) / elementsEach]++;
+        nTups++;
     }
 
     /**
@@ -47,9 +58,32 @@ public class IntHistogram {
      * @return Predicted selectivity of this particular operator and value
      */
     public double estimateSelectivity(Predicate.Op op, int v) {
-
-        // TODO: some code goes here
-        return -1.0;
+        int idx = (v - min) / elementsEach;
+        switch (op) {
+            case EQUALS:
+                if (v < min) return 0.0;
+                if (v > max) return 0.0;
+                return (double) bins[idx] / elementsEach / nTups;
+            case GREATER_THAN:
+                if (v >= max) return 0.0;
+                if (v < min) return 1.0;
+                int right = min + elementsEach * (idx + 1) - 1;
+                double b_part = (double) (right - v) / elementsEach * bins[idx] / nTups;
+                int sum = 0;
+                for (int i = idx + 1; i < bins.length; i++) { sum += bins[i]; }
+                double rest = (double) sum / nTups;
+                return b_part + rest;
+            case LESS_THAN:
+                return 1.0 - estimateSelectivity(Predicate.Op.GREATER_THAN_OR_EQ, v);
+            case GREATER_THAN_OR_EQ:
+                return estimateSelectivity(Predicate.Op.EQUALS, v) + estimateSelectivity(Predicate.Op.GREATER_THAN, v);
+            case LESS_THAN_OR_EQ:
+                return 1.0 - estimateSelectivity(Predicate.Op.GREATER_THAN, v);
+            case NOT_EQUALS:
+                return 1.0 - estimateSelectivity(Predicate.Op.EQUALS, v);
+            default:
+                throw new RuntimeException("IntHistogram::Unsupported Op");
+        }
     }
 
     /**
@@ -68,7 +102,14 @@ public class IntHistogram {
      * @return A string describing this histogram, for debugging purposes
      */
     public String toString() {
-        // TODO: some code goes here
-        return null;
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("min: ").append(min).append(", ");
+        stringBuilder.append("max: ").append(max).append(", ");
+        stringBuilder.append("bins: [");
+        for (int i = 0; i < bins.length - 1; i++) {
+            stringBuilder.append(bins[i]).append(", ");
+        }
+        stringBuilder.append(bins[bins.length - 1]).append("]");
+        return stringBuilder.toString();
     }
 }

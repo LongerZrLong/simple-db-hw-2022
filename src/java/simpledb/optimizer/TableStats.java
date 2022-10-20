@@ -6,7 +6,11 @@ import simpledb.execution.Predicate;
 import simpledb.execution.SeqScan;
 import simpledb.storage.*;
 import simpledb.transaction.Transaction;
+import simpledb.transaction.TransactionAbortedException;
+import simpledb.transaction.TransactionId;
 
+import javax.xml.crypto.Data;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -66,6 +70,12 @@ public class TableStats {
      */
     static final int NUM_HIST_BINS = 100;
 
+    private final int tableid;
+    private final int ioCostPerPage;
+    private int cardinality;
+    private final Map<Integer, IntHistogram> intColHistMap;     // fieldIdx -> Hist
+    private final Map<Integer, StringHistogram> strColHistMap;  // fieldIdx -> Hist
+
     /**
      * Create a new TableStats object, that keeps track of statistics on each
      * column of a table
@@ -82,7 +92,72 @@ public class TableStats {
         // You should try to do this reasonably efficiently, but you don't
         // necessarily have to (for example) do everything
         // in a single scan of the table.
-        // TODO: some code goes here
+
+        this.tableid = tableid;
+        this.cardinality = 0;
+        this.ioCostPerPage = ioCostPerPage;
+
+        intColHistMap = new HashMap<>();
+        strColHistMap = new HashMap<>();
+
+        Map<Integer, Integer> intColMinMap = new HashMap<>();
+        Map<Integer, Integer> intColMaxMap = new HashMap<>();
+
+        DbFile dbFile = Database.getCatalog().getDatabaseFile(tableid);
+        TupleDesc tupleDesc = Database.getCatalog().getTupleDesc(tableid);
+
+        for (int i = 0; i < tupleDesc.numFields(); i++) {
+            if (tupleDesc.getFieldType(i).equals(Type.INT_TYPE)) {
+                intColMinMap.put(i, Integer.MAX_VALUE);
+                intColMaxMap.put(i, Integer.MIN_VALUE);
+            } else if (tupleDesc.getFieldType(i).equals(Type.STRING_TYPE)) {
+                strColHistMap.put(i, new StringHistogram(NUM_HIST_BINS));
+            } else {
+                throw new RuntimeException("TableStats::TableStats: Unexpected field type");
+            }
+        }
+
+        // scan through the table to find the max and min for each int column
+        DbFileIterator iter = dbFile.iterator(new TransactionId());
+        try {
+            iter.open();
+            while (iter.hasNext()) {
+                Tuple tup = iter.next();
+                for (Integer key : intColMinMap.keySet()) {
+                    int val = ((IntField)tup.getField(key)).getValue();
+                    intColMinMap.put(key, Math.min(intColMinMap.get(key), val));
+                    intColMaxMap.put(key, Math.max(intColMaxMap.get(key), val));
+                }
+                cardinality++;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("TableStats::TableStats: Unable to scan table");
+        }
+
+        for (Integer key : intColMinMap.keySet()) {
+            intColHistMap.put(key, new IntHistogram(NUM_HIST_BINS, intColMinMap.get(key), intColMaxMap.get(key)));
+        }
+
+        // scan the table to compute histogram for each field
+        try {
+            iter.rewind();
+            while (iter.hasNext()) {
+                Tuple tup = iter.next();
+                for (int i = 0; i < tupleDesc.numFields(); i++) {
+                    if (tupleDesc.getFieldType(i) == Type.INT_TYPE) {
+                        intColHistMap.get(i).addValue(((IntField)tup.getField(i)).getValue());
+                    } else if (tupleDesc.getFieldType(i) == Type.STRING_TYPE) {
+                        strColHistMap.get(i).addValue(((StringField)tup.getField(i)).getValue());
+                    } else {
+                        throw new RuntimeException("TableStats::TableStats: Unexpected field type");
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("TableStats::TableStats: Unable to scan table");
+        }
     }
 
     /**
@@ -98,8 +173,10 @@ public class TableStats {
      * @return The estimated cost of scanning the table.
      */
     public double estimateScanCost() {
-        // TODO: some code goes here
-        return 0;
+        // estimate number of pages
+        int pageSize = BufferPool.getPageSize();
+        int estimatedNumPages = (cardinality * Database.getCatalog().getTupleDesc(tableid).getSize() + pageSize - 1) / pageSize;
+        return estimatedNumPages * ioCostPerPage;
     }
 
     /**
@@ -111,8 +188,7 @@ public class TableStats {
      *         selectivityFactor
      */
     public int estimateTableCardinality(double selectivityFactor) {
-        // TODO: some code goes here
-        return 0;
+        return (int) (cardinality * selectivityFactor);
     }
 
     /**
@@ -140,16 +216,22 @@ public class TableStats {
      *         predicate
      */
     public double estimateSelectivity(int field, Predicate.Op op, Field constant) {
-        // TODO: some code goes here
-        return 1.0;
+        if (intColHistMap.containsKey(field)) {
+            return intColHistMap.get(field).estimateSelectivity(op, ((IntField)constant).getValue());
+        }
+
+        if (strColHistMap.containsKey(field)) {
+            return strColHistMap.get(field).estimateSelectivity(op, ((StringField)constant).getValue());
+        }
+
+        throw new RuntimeException("TableStats::estimateSelectivity: Unexpected field");
     }
 
     /**
      * return the total number of tuples in this table
      */
     public int totalTuples() {
-        // TODO: some code goes here
-        return 0;
+        return cardinality;
     }
 
 }
