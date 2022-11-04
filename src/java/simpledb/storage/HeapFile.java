@@ -119,7 +119,7 @@ public class HeapFile implements DbFile {
         int pgNo;
         List<Page> ret = new ArrayList<>();
         for (pgNo = 0; pgNo < numPages(); pgNo++) {
-            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), null);
+            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), Permissions.READ_WRITE);
             try {
                 page.insertTuple(t);
 
@@ -139,7 +139,7 @@ public class HeapFile implements DbFile {
             raf.close();
 
             // get the new page
-            HeapPage newPage = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), null);
+            HeapPage newPage = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), Permissions.READ_WRITE);
             newPage.insertTuple(t);
 
             ret.add(newPage);
@@ -154,7 +154,7 @@ public class HeapFile implements DbFile {
         int pgNo;
         ArrayList<Page> ret = new ArrayList<>();
         for (pgNo = 0; pgNo < numPages(); pgNo++) {
-            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), null);
+            HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, new HeapPageId(tableId, pgNo), Permissions.READ_WRITE);
             try {
                 page.deleteTuple(t);
 
@@ -182,7 +182,7 @@ public class HeapFile implements DbFile {
             @Override
             public void open() throws DbException, TransactionAbortedException {
                 pageNo = 0;
-                HeapPage page = (HeapPage)Database.getBufferPool().getPage(null, new HeapPageId(tableId, pageNo), null);
+                HeapPage page = (HeapPage)Database.getBufferPool().getPage(null, new HeapPageId(tableId, pageNo), Permissions.READ_ONLY);
                 tupleIter = page.iterator();
             }
 
@@ -194,7 +194,7 @@ public class HeapFile implements DbFile {
 
                 if (++pageNo == numPages()) return false;
 
-                HeapPage page = (HeapPage)Database.getBufferPool().getPage(null, new HeapPageId(tableId, pageNo), null);
+                HeapPage page = (HeapPage)Database.getBufferPool().getPage(null, new HeapPageId(tableId, pageNo), Permissions.READ_ONLY);
                 tupleIter = page.iterator();
 
                 return hasNext();

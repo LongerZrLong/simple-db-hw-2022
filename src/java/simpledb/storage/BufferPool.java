@@ -22,6 +22,17 @@ import java.util.concurrent.ThreadLocalRandom;
  * @Threadsafe, all fields are final
  */
 public class BufferPool {
+
+    private static class LockManager {
+        public Map<PageId, Set<TransactionId>> sLockTable;
+        public Map<PageId, TransactionId> xLockTable;
+
+        public LockManager() {
+            sLockTable = new HashMap<>();
+            xLockTable = new HashMap<>();
+        }
+    }
+
     /**
      * Bytes per page, including header.
      */
@@ -36,9 +47,23 @@ public class BufferPool {
      */
     public static final int DEFAULT_PAGES = 50;
 
+    /**
+     * Default timeout in milliseconds when trying to acquire a lock
+     */
+    public static final int TIME_OUT = 100;
+
+    /**
+     * Default retry interval for acquiring a lock
+     */
+    public static final int RETRY_INTERVAL = 10;
+
     private final Page[] pages;
     private final Map<PageId, Integer> pgId2Idx;
     private final List<Integer> nullPageIdxes;
+
+    private final Object lk;    // lock for BufferPool
+
+    private final LockManager lockMgr;
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -53,6 +78,10 @@ public class BufferPool {
         for (int i = 0; i < pages.length; i++) {
             nullPageIdxes.add(i);
         }
+
+        lk = new Object();
+
+        lockMgr = new LockManager();
     }
 
     public static int getPageSize() {
@@ -86,20 +115,89 @@ public class BufferPool {
      */
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
-        if (pgId2Idx.containsKey(pid)) {
-            return pages[pgId2Idx.get(pid)];
+
+        // try to acquire the lock within timeout
+        long startTime = System.currentTimeMillis();
+        boolean acquired = false;
+
+        while (System.currentTimeMillis() - startTime < TIME_OUT) {
+            // Try to acquire the needed lock within TIME_OUT
+
+            synchronized (lockMgr) {
+                TransactionId xTid = lockMgr.xLockTable.get(pid);
+                Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
+
+                switch (perm) {
+                    case READ_ONLY:
+                        if (xTid != null) {
+                            if (tid.equals(xTid)) {
+                                acquired = true;
+                            }
+                        } else {
+                            // add this tx to sLockTable
+                            if (sTidSet == null) {
+                                lockMgr.sLockTable.put(pid, new HashSet<>());
+                                lockMgr.sLockTable.get(pid).add(tid);
+                            } else {
+                                lockMgr.sLockTable.get(pid).add(tid);
+                            }
+                            acquired = true;
+                        }
+                        break;
+                    case READ_WRITE:
+                        if (xTid != null) {
+                            if (tid.equals(xTid)) {
+                                acquired = true;
+                            }
+                        } else {
+                            if (sTidSet == null) {
+                                // if there is no tx holding sLock on pid
+                                lockMgr.xLockTable.put(pid, tid);
+                                acquired = true;
+                            } else {
+                                if (sTidSet.size() == 1 && sTidSet.contains(tid)) {
+                                    // if tx is the only one holding sLock on pid
+                                    lockMgr.sLockTable.remove(pid);
+                                    lockMgr.xLockTable.put(pid, tid);
+                                    acquired = true;
+                                }
+                            }
+                        }
+                        break;
+                    default:
+                        throw new DbException("BufferPool::getPage: Unexpected permission");
+                }
+            }
+
+            if (acquired) break;
+
+            try {
+                Thread.sleep(RETRY_INTERVAL);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
-        if (nullPageIdxes.isEmpty()) {
-            // if there is no null page, evict one
-            evictPage();
+        // if the required lock not acquired with TIME_OUT
+        if (!acquired)
+            throw new TransactionAbortedException();
+
+        synchronized (lk) {
+            if (pgId2Idx.containsKey(pid)) {
+                return pages[pgId2Idx.get(pid)];
+            }
+
+            if (nullPageIdxes.isEmpty()) {
+                // if there is no null page, evict one
+                evictPage();
+            }
+
+            int idx = nullPageIdxes.remove(0);
+            pages[idx] = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+            pgId2Idx.put(pages[idx].getId(), idx);
+
+            return pages[idx];
         }
-
-        int idx = nullPageIdxes.remove(0);
-        pages[idx] = Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
-        pgId2Idx.put(pages[idx].getId(), idx);
-
-        return pages[idx];
     }
 
     /**
@@ -112,8 +210,25 @@ public class BufferPool {
      * @param pid the ID of the page to unlock
      */
     public void unsafeReleasePage(TransactionId tid, PageId pid) {
-        // TODO: some code goes here
-        // not necessary for lab1|lab2
+        synchronized (lockMgr) {
+            TransactionId xTid = lockMgr.xLockTable.get(pid);
+            Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
+
+            if (xTid != null) {
+                if (xTid.equals(tid))
+                    // if tid is holding xLock on pid
+                    lockMgr.xLockTable.remove(pid);
+            } else {
+                // no tx is holding xLock on pid
+                if (!sTidSet.isEmpty() && sTidSet.contains(tid)) {
+                    // tid is holding sLock on pid
+                    lockMgr.sLockTable.get(pid).remove(tid);
+                    if (lockMgr.sLockTable.get(pid).isEmpty()) {
+                        lockMgr.sLockTable.remove(pid);
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -130,9 +245,16 @@ public class BufferPool {
      * Return true if the specified transaction has a lock on the specified page
      */
     public boolean holdsLock(TransactionId tid, PageId p) {
-        // TODO: some code goes here
-        // not necessary for lab1|lab2
-        return false;
+        synchronized (lockMgr) {
+            TransactionId xTid = lockMgr.xLockTable.get(p);
+            Set<TransactionId> sTidSet = lockMgr.sLockTable.get(p);
+
+            if (xTid != null) {
+                return xTid.equals(tid);
+            } else {
+                return !sTidSet.isEmpty() && sTidSet.contains(tid);
+            }
+        }
     }
 
     /**
