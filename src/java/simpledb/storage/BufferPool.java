@@ -61,9 +61,10 @@ public class BufferPool {
     private final Map<PageId, Integer> pgId2Idx;
     private final List<Integer> nullPageIdxes;
 
-    private final Object lk;    // lock for BufferPool
+    private final LockManager lockMgr;  // sLock and xLock
+    private final Map<TransactionId, List<TransactionId>> waitForGraph;
 
-    private final LockManager lockMgr;
+    private final Object lk;    // lock for BufferPool
 
     /**
      * Creates a BufferPool that caches up to numPages pages.
@@ -79,9 +80,10 @@ public class BufferPool {
             nullPageIdxes.add(i);
         }
 
-        lk = new Object();
-
         lockMgr = new LockManager();
+        waitForGraph = new HashMap<>();
+
+        lk = new Object();
     }
 
     public static int getPageSize() {
@@ -123,7 +125,7 @@ public class BufferPool {
         while (System.currentTimeMillis() - startTime < TIME_OUT) {
             // Try to acquire the needed lock within TIME_OUT
 
-            synchronized (lockMgr) {
+            synchronized (lk) {
                 TransactionId xTid = lockMgr.xLockTable.get(pid);
                 Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
 
@@ -132,6 +134,8 @@ public class BufferPool {
                         if (xTid != null) {
                             if (tid.equals(xTid)) {
                                 acquired = true;
+                            } else {
+                                addDependency(tid, xTid);
                             }
                         } else {
                             // add this tx to sLockTable
@@ -148,6 +152,8 @@ public class BufferPool {
                         if (xTid != null) {
                             if (tid.equals(xTid)) {
                                 acquired = true;
+                            } else {
+                                addDependency(tid, xTid);
                             }
                         } else {
                             if (sTidSet == null) {
@@ -160,16 +166,30 @@ public class BufferPool {
                                     lockMgr.sLockTable.remove(pid);
                                     lockMgr.xLockTable.put(pid, tid);
                                     acquired = true;
+                                } else {
+                                    for (TransactionId dst : sTidSet) {
+                                        if (tid.equals(dst)) continue;  // ignore self-dependency
+                                        addDependency(tid, dst);
+                                    }
                                 }
                             }
                         }
                         break;
                     default:
-                        throw new DbException("BufferPool::getPage: Unexpected permission");
+                        throw new RuntimeException("BufferPool::getPage: Unexpected permission");
                 }
             }
 
             if (acquired) break;
+
+            // if not acquire the needed lock, check whether there are deadlock
+            boolean deadlock = hasLoop(tid);
+            removeDependency(tid);
+
+            if (deadlock) {
+                // there is deadlock, abort current tx
+                throw new TransactionAbortedException();
+            }
 
             try {
                 Thread.sleep(RETRY_INTERVAL);
@@ -178,7 +198,7 @@ public class BufferPool {
             }
         }
 
-        // if the required lock not acquired with TIME_OUT
+        // if the required lock not acquired within TIME_OUT
         if (!acquired)
             throw new TransactionAbortedException();
 
@@ -210,22 +230,21 @@ public class BufferPool {
      * @param pid the ID of the page to unlock
      */
     public void unsafeReleasePage(TransactionId tid, PageId pid) {
-        synchronized (lockMgr) {
-            TransactionId xTid = lockMgr.xLockTable.get(pid);
-            Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
+        // only called by transactionComplete
+        TransactionId xTid = lockMgr.xLockTable.get(pid);
+        Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
 
-            if (xTid != null) {
-                if (xTid.equals(tid))
-                    // if tid is holding xLock on pid
-                    lockMgr.xLockTable.remove(pid);
-            } else {
-                // no tx is holding xLock on pid
-                if (!sTidSet.isEmpty() && sTidSet.contains(tid)) {
-                    // tid is holding sLock on pid
-                    lockMgr.sLockTable.get(pid).remove(tid);
-                    if (lockMgr.sLockTable.get(pid).isEmpty()) {
-                        lockMgr.sLockTable.remove(pid);
-                    }
+        if (xTid != null) {
+            if (xTid.equals(tid))
+                // if tid is holding xLock on pid
+                lockMgr.xLockTable.remove(pid);
+        } else {
+            // no tx is holding xLock on pid
+            if (!sTidSet.isEmpty() && sTidSet.contains(tid)) {
+                // tid is holding sLock on pid
+                lockMgr.sLockTable.get(pid).remove(tid);
+                if (lockMgr.sLockTable.get(pid).isEmpty()) {
+                    lockMgr.sLockTable.remove(pid);
                 }
             }
         }
@@ -237,15 +256,14 @@ public class BufferPool {
      * @param tid the ID of the transaction requesting the unlock
      */
     public void transactionComplete(TransactionId tid) {
-        // TODO: some code goes here
-        // not necessary for lab1|lab2
+        transactionComplete(tid, true);
     }
 
     /**
      * Return true if the specified transaction has a lock on the specified page
      */
     public boolean holdsLock(TransactionId tid, PageId p) {
-        synchronized (lockMgr) {
+        synchronized (lk) {
             TransactionId xTid = lockMgr.xLockTable.get(p);
             Set<TransactionId> sTidSet = lockMgr.sLockTable.get(p);
 
@@ -265,8 +283,44 @@ public class BufferPool {
      * @param commit a flag indicating whether we should commit or abort
      */
     public void transactionComplete(TransactionId tid, boolean commit) {
-        // TODO: some code goes here
-        // not necessary for lab1|lab2
+        synchronized (lk) {
+            List<PageId> affectedPids = new LinkedList<>();
+
+            // find the pages in xLockTable
+            for (Map.Entry<PageId, TransactionId> entry : lockMgr.xLockTable.entrySet()) {
+                if (entry.getValue().equals(tid)) {
+                    PageId pid = entry.getKey();
+                    try {
+                        if (commit){
+                            // commit, flush the page to disk
+                            flushPage(pid);
+                        } else {
+                            // abort, re-read the page
+                            Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+                        }
+                    } catch (IOException ioe) {
+                        ioe.printStackTrace();
+                    }
+
+                    affectedPids.add(entry.getKey());
+                }
+            }
+
+            // find the pages in sLockTable
+            for (Map.Entry<PageId, Set<TransactionId>> entry : lockMgr.sLockTable.entrySet()) {
+                if (entry.getValue().contains(tid)) {
+                    affectedPids.add(entry.getKey());
+                }
+            }
+
+            // Strict 2PL: only release locks after Commit / Abort
+            for (PageId pid : affectedPids) {
+                unsafeReleasePage(tid, pid);
+            }
+
+            // remove wait-for dependencies related to tid
+            removeDependency(tid);
+        }
     }
 
     /**
@@ -382,25 +436,88 @@ public class BufferPool {
         // randomly pick an index in [0, pages.length) to evict
         int randomIdx = ThreadLocalRandom.current().nextInt() & Integer.MAX_VALUE % pages.length;
 
+        // Because of NO STEAL, don't evict dirty pages
+        // If pages[randomIdx] is dirty, loop from randomIdx to find the first clean page
+        int count = 0;
+        while (count < pages.length && pages[randomIdx].isDirty() != null) {
+            randomIdx = (randomIdx + 1) % pages.length;
+            count++;
+        }
+
+        if (count == pages.length) {
+            // there is no clean page
+            throw new DbException("BufferPool::evictPage: No clean page to evict");
+        }
+
         try {
             PageId pid = pages[randomIdx].getId();
+
+            // check xLock on pid
+            if (lockMgr.xLockTable.containsKey(pid)) {
+                throw new RuntimeException("BufferPool::evictPage: xLock held on clean page");
+            }
+
+            // check sLock on pid
+            // it is safe to release all the sLocks on pid b/c if some trxes
+            // want to read the pid, they can reacquire the sLocks and read the same result
+            lockMgr.sLockTable.remove(pid);
+
             flushPage(pid);
             removePage(pid);
         } catch (IOException ioe) {
-            throw new DbException("BufferPool::evictPage: fail to write dirty page to disk");
+            ioe.printStackTrace();
         }
     }
 
-    // Fixme: temporary implementation
-    private synchronized void updatePage(List<Page> pages, TransactionId tid)
-            throws TransactionAbortedException, DbException {
+    private synchronized void updatePage(List<Page> pages, TransactionId tid) {
         for (Page p : pages) {
             // get the page and overwrite it with the dirty one
-            getPage(tid, p.getId(), null);
             p.markDirty(true, tid);
 
             int idx = pgId2Idx.get(p.getId());
             this.pages[idx] = p;
+        }
+    }
+
+    private boolean hasLoop(TransactionId src) {
+        // Use BFS to find whether there is a loop starting from src
+        Deque<TransactionId> deq = new LinkedList<>();
+        Set<TransactionId> visited = new HashSet<>();
+
+        deq.addLast(src);
+        visited.add(src);
+
+        while (!deq.isEmpty()) {
+            TransactionId first = deq.peekFirst(); deq.removeFirst();
+
+            if (waitForGraph.get(first) == null) continue;
+            for (TransactionId tx : waitForGraph.get(first)) {
+                // found a loop
+                if (tx == src) return true;
+
+                if (!visited.contains(tx)) {
+                    deq.addLast(tx);
+                    visited.add(tx);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private void addDependency(TransactionId src, TransactionId dst) {
+        waitForGraph.computeIfAbsent(src, k -> new LinkedList<>());
+        waitForGraph.get(src).add(dst);
+    }
+
+    private void removeDependency(TransactionId src) {
+        // remove wait-for dependencies from src
+        waitForGraph.remove(src);
+
+        // remove wait-for dependencies to src
+        for (Map.Entry<TransactionId, List<TransactionId>> entry : waitForGraph.entrySet()) {
+            entry.getValue().removeIf(transactionId -> transactionId.equals(src));
+            if (entry.getValue().size() == 0) waitForGraph.remove(entry.getKey());
         }
     }
 }
