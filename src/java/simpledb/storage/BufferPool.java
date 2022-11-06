@@ -453,9 +453,10 @@ public class BufferPool {
             PageId pid = pages[randomIdx].getId();
 
             // check xLock on pid
-            if (lockMgr.xLockTable.containsKey(pid)) {
-                throw new RuntimeException("BufferPool::evictPage: xLock held on clean page");
-            }
+            // it is safe to release all the xLocks on pid b/c pid is clean
+            // and if some trxes want to write the pid, they can reacquire the
+            // xLock and write to it
+            lockMgr.xLockTable.remove(pid);
 
             // check sLock on pid
             // it is safe to release all the sLocks on pid b/c if some trxes
