@@ -29,8 +29,7 @@ public class HeapPage implements Page {
     byte[] oldData;
     private final Byte oldDataLock = (byte) 0;
 
-    boolean isDirty = false;
-    TransactionId tid = null;
+    TransactionId dirtier = null;
 
     /**
      * Create a HeapPage from a set of bytes of data read from disk.
@@ -299,17 +298,14 @@ public class HeapPage implements Page {
      * that did the dirtying
      */
     public void markDirty(boolean dirty, TransactionId tid) {
-        // Fixme: temporary code to pass HeapPageWriteTest
-        isDirty = dirty;
-        this.tid = tid;
+        dirtier = dirty ? tid : null;
     }
 
     /**
      * Returns the tid of the transaction that last dirtied this page, or null if the page is not dirty
      */
     public TransactionId isDirty() {
-        // Fixme: temporary code to pass HeapPageWriteTest
-        return isDirty ? tid : null;
+        return dirtier;
     }
 
     /**

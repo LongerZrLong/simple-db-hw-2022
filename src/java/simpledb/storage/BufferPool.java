@@ -48,14 +48,10 @@ public class BufferPool {
     public static final int DEFAULT_PAGES = 50;
 
     /**
-     * Default timeout in milliseconds when trying to acquire a lock
+     * Default retry interval and retry times for acquiring a lock
      */
-    public static final int TIME_OUT = 100;
-
-    /**
-     * Default retry interval for acquiring a lock
-     */
-    public static final int RETRY_INTERVAL = 10;
+    public static final int RETRY_INTERVAL = 20;
+    public static final int RETRY_TIMES = 5;
 
     private final Page[] pages;
     private final Map<PageId, Integer> pgId2Idx;
@@ -118,14 +114,20 @@ public class BufferPool {
     public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
 
-        // try to acquire the lock within timeout
-        long startTime = System.currentTimeMillis();
         boolean acquired = false;
+        boolean builtDependencies = false;  // build wait-for dependencies if not acquired the needed lock
 
-        while (System.currentTimeMillis() - startTime < TIME_OUT) {
+        int count = 0;
+        while (true) {
             // Try to acquire the needed lock within TIME_OUT
 
             synchronized (lk) {
+                // reach the maximum retry times, clean the dependency and break
+                if (count >= RETRY_TIMES) {
+                    removeDependency(tid);
+                    break;
+                }
+
                 TransactionId xTid = lockMgr.xLockTable.get(pid);
                 Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
 
@@ -135,7 +137,10 @@ public class BufferPool {
                             if (tid.equals(xTid)) {
                                 acquired = true;
                             } else {
-                                addDependency(tid, xTid);
+                                if (!builtDependencies) {
+                                    addDependency(tid, xTid);
+                                    builtDependencies = true;
+                                }
                             }
                         } else {
                             // add this tx to sLockTable
@@ -153,7 +158,10 @@ public class BufferPool {
                             if (tid.equals(xTid)) {
                                 acquired = true;
                             } else {
-                                addDependency(tid, xTid);
+                                if (!builtDependencies) {
+                                    addDependency(tid, xTid);
+                                    builtDependencies = true;
+                                }
                             }
                         } else {
                             if (sTidSet == null) {
@@ -167,9 +175,12 @@ public class BufferPool {
                                     lockMgr.xLockTable.put(pid, tid);
                                     acquired = true;
                                 } else {
-                                    for (TransactionId dst : sTidSet) {
-                                        if (tid.equals(dst)) continue;  // ignore self-dependency
-                                        addDependency(tid, dst);
+                                    if (!builtDependencies) {
+                                        for (TransactionId dst : sTidSet) {
+                                            if (tid.equals(dst)) continue;  // ignore self-dependency
+                                            addDependency(tid, dst);
+                                        }
+                                        builtDependencies = true;
                                     }
                                 }
                             }
@@ -178,17 +189,19 @@ public class BufferPool {
                     default:
                         throw new RuntimeException("BufferPool::getPage: Unexpected permission");
                 }
-            }
 
-            if (acquired) break;
-
-            // if not acquire the needed lock, check whether there are deadlock
-            boolean deadlock = hasLoop(tid);
-            removeDependency(tid);
-
-            if (deadlock) {
-                // there is deadlock, abort current tx
-                throw new TransactionAbortedException();
+                if (acquired) {
+                    // if acquire the needed lock, clean up dependencies and break
+                    if (builtDependencies)
+                        removeDependency(tid);
+                    break;
+                } else {
+                    // if not acquire the needed lock, check whether there are deadlocks
+                    if (hasLoop(tid)) {
+                        removeDependency(tid);
+                        throw new TransactionAbortedException();
+                    }
+                }
             }
 
             try {
@@ -196,11 +209,13 @@ public class BufferPool {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+            count++;
         }
 
-        // if the required lock not acquired within TIME_OUT
-        if (!acquired)
+        // if the required lock not acquired within RETRY_TIMES
+        if (!acquired) {
             throw new TransactionAbortedException();
+        }
 
         synchronized (lk) {
             if (pgId2Idx.containsKey(pid)) {
@@ -295,8 +310,9 @@ public class BufferPool {
                             // commit, flush the page to disk
                             flushPage(pid);
                         } else {
-                            // abort, re-read the page
-                            Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid);
+                            // abort, remove the page
+                            // next time when the page is needed, the on-disk version will be re-read
+                            removePage(pid);
                         }
                     } catch (IOException ioe) {
                         ioe.printStackTrace();
@@ -341,7 +357,7 @@ public class BufferPool {
     public void insertTuple(TransactionId tid, int tableId, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
         List<Page> pages = Database.getCatalog().getDatabaseFile(tableId).insertTuple(tid, t);
-        updatePage(pages, tid);
+        updatePage(pages, tid, Permissions.READ_WRITE);
     }
 
     /**
@@ -360,7 +376,7 @@ public class BufferPool {
     public void deleteTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
         List<Page> pages = Database.getCatalog().getDatabaseFile(t.getRecordId().getPageId().getTableId()).deleteTuple(tid, t);
-        updatePage(pages, tid);
+        updatePage(pages, tid, Permissions.READ_WRITE);
     }
 
     /**
@@ -470,9 +486,12 @@ public class BufferPool {
         }
     }
 
-    private synchronized void updatePage(List<Page> pages, TransactionId tid) {
+    private synchronized void updatePage(List<Page> pages, TransactionId tid, Permissions perm)
+            throws TransactionAbortedException, DbException {
         for (Page p : pages) {
             // get the page and overwrite it with the dirty one
+            getPage(tid, p.getId(), perm);  // The reason why calling getPage here is that the BufferPoolWriteTest.handleManyDirtyPages
+                                            // implements insertTuple without using getPage.
             p.markDirty(true, tid);
 
             int idx = pgId2Idx.get(p.getId());
@@ -494,7 +513,7 @@ public class BufferPool {
             if (waitForGraph.get(first) == null) continue;
             for (TransactionId tx : waitForGraph.get(first)) {
                 // found a loop
-                if (tx == src) return true;
+                if (tx.equals(src)) return true;
 
                 if (!visited.contains(tx)) {
                     deq.addLast(tx);
@@ -516,9 +535,17 @@ public class BufferPool {
         waitForGraph.remove(src);
 
         // remove wait-for dependencies to src
-        for (Map.Entry<TransactionId, List<TransactionId>> entry : waitForGraph.entrySet()) {
+        for (var entryIter = waitForGraph.entrySet().iterator(); entryIter.hasNext(); ) {
+            var entry = entryIter.next();
+
+            // if list is null
+            if (entry.getValue() == null) entryIter.remove();
+
+            // remove src
             entry.getValue().removeIf(transactionId -> transactionId.equals(src));
-            if (entry.getValue().size() == 0) waitForGraph.remove(entry.getKey());
+
+            // if no children
+            if (entry.getValue().size() == 0) entryIter.remove();
         }
     }
 }
