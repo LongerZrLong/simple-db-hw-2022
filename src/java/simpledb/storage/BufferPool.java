@@ -51,7 +51,6 @@ public class BufferPool {
      * Default retry interval and retry times for acquiring a lock
      */
     public static final int RETRY_INTERVAL = 20;
-    public static final int RETRY_TIMES = 5;
 
     private final Page[] pages;
     private final Map<PageId, Integer> pgId2Idx;
@@ -115,19 +114,10 @@ public class BufferPool {
             throws TransactionAbortedException, DbException {
 
         boolean acquired = false;
-        boolean builtDependencies = false;  // build wait-for dependencies if not acquired the needed lock
 
-        int count = 0;
         while (true) {
-            // Try to acquire the needed lock within TIME_OUT
 
             synchronized (lk) {
-                // reach the maximum retry times, clean the dependency and break
-                if (count >= RETRY_TIMES) {
-                    removeDependency(tid);
-                    break;
-                }
-
                 TransactionId xTid = lockMgr.xLockTable.get(pid);
                 Set<TransactionId> sTidSet = lockMgr.sLockTable.get(pid);
 
@@ -137,10 +127,7 @@ public class BufferPool {
                             if (tid.equals(xTid)) {
                                 acquired = true;
                             } else {
-                                if (!builtDependencies) {
-                                    addDependency(tid, xTid);
-                                    builtDependencies = true;
-                                }
+                                updateDependency(tid, xTid);
                             }
                         } else {
                             // add this tx to sLockTable
@@ -158,10 +145,7 @@ public class BufferPool {
                             if (tid.equals(xTid)) {
                                 acquired = true;
                             } else {
-                                if (!builtDependencies) {
-                                    addDependency(tid, xTid);
-                                    builtDependencies = true;
-                                }
+                                updateDependency(tid, xTid);
                             }
                         } else {
                             if (sTidSet == null) {
@@ -175,12 +159,9 @@ public class BufferPool {
                                     lockMgr.xLockTable.put(pid, tid);
                                     acquired = true;
                                 } else {
-                                    if (!builtDependencies) {
-                                        for (TransactionId dst : sTidSet) {
-                                            if (tid.equals(dst)) continue;  // ignore self-dependency
-                                            addDependency(tid, dst);
-                                        }
-                                        builtDependencies = true;
+                                    for (TransactionId dst : sTidSet) {
+                                        if (tid.equals(dst)) continue;  // ignore self-dependency
+                                        updateDependency(tid, dst);
                                     }
                                 }
                             }
@@ -192,13 +173,13 @@ public class BufferPool {
 
                 if (acquired) {
                     // if acquire the needed lock, clean up dependencies and break
-                    if (builtDependencies)
-                        removeDependency(tid);
+                    removeWaitFor(tid);
                     break;
                 } else {
                     // if not acquire the needed lock, check whether there are deadlocks
                     if (hasLoop(tid)) {
-                        removeDependency(tid);
+                        removeWaitFor(tid);
+                        removeWaitMe(tid);
                         throw new TransactionAbortedException();
                     }
                 }
@@ -209,12 +190,6 @@ public class BufferPool {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            count++;
-        }
-
-        // if the required lock not acquired within RETRY_TIMES
-        if (!acquired) {
-            throw new TransactionAbortedException();
         }
 
         synchronized (lk) {
@@ -335,7 +310,8 @@ public class BufferPool {
             }
 
             // remove wait-for dependencies related to tid
-            removeDependency(tid);
+            removeWaitFor(tid);
+            removeWaitMe(tid);
         }
     }
 
@@ -525,16 +501,18 @@ public class BufferPool {
         return false;
     }
 
-    private void addDependency(TransactionId src, TransactionId dst) {
+    private void updateDependency(TransactionId src, TransactionId dst) {
         waitForGraph.computeIfAbsent(src, k -> new LinkedList<>());
         waitForGraph.get(src).add(dst);
     }
 
-    private void removeDependency(TransactionId src) {
-        // remove wait-for dependencies from src
-        waitForGraph.remove(src);
+    private void removeWaitFor(TransactionId tid) {
+        // remove what tid waits for
+        waitForGraph.remove(tid);
+    }
 
-        // remove wait-for dependencies to src
+    private void removeWaitMe(TransactionId tid) {
+        // remove those transactions waiting for tid
         for (var entryIter = waitForGraph.entrySet().iterator(); entryIter.hasNext(); ) {
             var entry = entryIter.next();
 
@@ -542,7 +520,7 @@ public class BufferPool {
             if (entry.getValue() == null) entryIter.remove();
 
             // remove src
-            entry.getValue().removeIf(transactionId -> transactionId.equals(src));
+            entry.getValue().removeIf(transactionId -> transactionId.equals(tid));
 
             // if no children
             if (entry.getValue().size() == 0) entryIter.remove();
